@@ -14,9 +14,11 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import plotly.express as px
+import plotly.graph_objects as go
 from sklearn.decomposition import PCA
 from sklearn.metrics import silhouette_samples
 from scipy.cluster.hierarchy import linkage, dendrogram
+from sklearn.preprocessing import StandardScaler, MinMaxScaler, RobustScaler
 
 # PyCaret
 from pycaret.clustering import setup, create_model, assign_model, plot_model, save_model
@@ -171,6 +173,34 @@ def plot_cluster_means_heatmap(labeled: pd.DataFrame, cluster_col: str = "Cluste
     )
     fig.update_layout(title=f"Heatmap das médias por cluster{title_suffix}", height=500)
     st.plotly_chart(fig, use_container_width=True)
+
+            # Normalização dos dados
+def apply_transform(series: pd.Series, method: str):
+    """Aplica transformação/normalização a uma Series e retorna numpy array."""
+    x = series.astype(float).values.reshape(-1, 1)
+    if method == "none" or method is None:
+        return x.flatten()
+    if method == "standard":
+        scaler = StandardScaler()
+        return scaler.fit_transform(x).flatten()
+    if method == "minmax":
+        scaler = MinMaxScaler()
+        return scaler.fit_transform(x).flatten()
+    if method == "robust":
+        scaler = RobustScaler()
+        return scaler.fit_transform(x).flatten()
+    if method == "log1p":
+        # evita log de valores < -1; ajusta conforme teu dataset
+        safe = np.clip(x, a_min=-0.999999, a_max=None)
+        return np.log1p(safe).flatten()
+    if method == "winsorize":
+        # winsorize manual por percentil (1% / 99% default)
+        lo = np.nanpercentile(x, 1)
+        hi = np.nanpercentile(x, 99)
+        return np.clip(x, lo, hi).flatten()
+    # fallback
+    return x.flatten()
+
 
 # -------------------- Fonte de Dados --------------------
 st.sidebar.header("Fonte de Dados")
@@ -380,8 +410,20 @@ with tab2:
             sample_df = num_df_full[top_feats].sample(n=sample_n, random_state=42) if num_df_full.shape[0] > sample_n else num_df_full[top_feats]
             # melt para boxplot agrupado
             df_melt = sample_df.reset_index().melt(id_vars=["index"], value_vars=top_feats, var_name="feature", value_name="value")
-            fig_box = px.box(df_melt, x="feature", y="value", points="all", title=f"Boxplots — top {len(top_feats)} features por variância (sample)")
-            fig_box.update_layout(xaxis_tickangle=-45, height=450)
+            # Usar graph_objects Box para permitir jitter/pointpos (os pontos ficam distribuídos dentro da categoria)
+            fig_box = go.Figure()
+            for feat in top_feats:
+                vals = df_melt.loc[df_melt["feature"] == feat, "value"].dropna().values
+                fig_box.add_trace(go.Box(
+                    y=vals,
+                    name=str(feat),
+                    boxpoints='all',
+                    jitter=0.5,
+                    pointpos=0,
+                    marker=dict(opacity=0.6, size=4),
+                    boxmean='sd'
+                ))
+            fig_box.update_layout(title=f"Boxplots — top {len(top_feats)} features por variância (sample)", xaxis_tickangle=-45, height=450)
             st.plotly_chart(fig_box, use_container_width=True)
             st.markdown("""
             💡 Por que isso importa:
@@ -664,8 +706,21 @@ if "res_df" in st.session_state and not st.session_state["res_df"].empty:
                 sil_samples = silhouette_samples(X_vis.values, labels)
                 df_sil = pd.DataFrame({"silhouette": sil_samples, "cluster": labels.astype(str)})
                 df_sil = df_sil.sort_values(["cluster", "silhouette"], ascending=[True, False])
-                fig_sil = px.box(df_sil, x="cluster", y="silhouette", points="all",
-                                 title="Silhouette por cluster (box + pontos)")
+                # Usar plotly.graph_objects para controlar jitter/posição dos pontos
+                fig_sil = go.Figure()
+                clusters_order = sorted(df_sil['cluster'].unique(), key=lambda x: str(x))
+                for cl in clusters_order:
+                    vals = df_sil.loc[df_sil['cluster'] == cl, 'silhouette'].dropna().values
+                    fig_sil.add_trace(go.Box(
+                        y=vals,
+                        name=str(cl),
+                        boxpoints='all',    # mostra pontos
+                        jitter=0.5,         # espalha pontos horizontalmente dentro da categoria
+                        pointpos=0,         # posiciona pontos em relação à caixa
+                        marker=dict(opacity=0.6, size=4),
+                        boxmean='sd'
+                    ))
+                fig_sil.update_layout(title="Silhouette por cluster (box + pontos)", xaxis_title="cluster", yaxis_title="silhouette", height=450)
                 st.plotly_chart(fig_sil, use_container_width=True)
                 st.markdown("Boxplot das silhuetas por cluster — mostra a distribuição de qualidade de atribuição dentro de cada cluster. Valores próximos de 1 = bem classificados; negativos = possivelmente mal atribuídos.")
             except Exception as e:
@@ -769,187 +824,187 @@ Ajuda a enxergar “grupos naturais” de genes/amostras que se comportam de for
             except Exception as e:
                 st.warning(f"Falha ao gerar projeção 2D: {e}")
 
-       # -------------------- Aba 5: Visualizações PyCaret --------------------
-with tab_pycaret:
-    st.subheader("Visualizações do PyCaret")
-    st.markdown("Gráficos extras para interpretar clusters: centróides, distância entre clusters, importância de features e ANOVA.")
+            # -------------------- Aba 5: Visualizações PyCaret --------------------
+        with tab_pycaret:
+            st.subheader("Visualizações do PyCaret")
+            st.markdown("Gráficos extras para interpretar clusters: centróides, distância entre clusters, importância de features e ANOVA.")
 
-    if isinstance(obj, str) or labeled_final is None:
-        st.warning(f"Não foi possível analisar {escolha}")
-    else:
-        X_all = labeled_final.drop(columns=["Cluster"])
-        y_all_raw = labeled_final["Cluster"]
-
-        try:
-            y_codes, y_uniques = pd.factorize(y_all_raw)
-        except Exception:
-            try:
-                y_codes = y_all_raw.astype(int).values
-                y_uniques = np.unique(y_codes)
-            except Exception:
-                y_codes = np.arange(len(y_all_raw))
-                y_uniques = np.unique(y_codes)
-
-        # 1) Heatmap das médias (centróides)
-        st.markdown("**Heatmap: médias/centróides por cluster**")
-        st.markdown("💡 Ideia geral: Cada linha = cluster, cada coluna = gene/feature. As cores mostram os valores médios de expressão.")
-        st.markdown("👉 Exemplo prático: Permite ver rapidamente quais genes estão mais ativos em cada cluster.")
-        try:
-            centroids = labeled_final.groupby("Cluster").mean()
-            if not centroids.empty:
-                fig_cent = px.imshow(
-                    centroids,
-                    labels=dict(x="feature", y="cluster", color="mean"),
-                    title="Centróides (média por feature por cluster)",
-                    aspect="auto"
-                )
-                fig_cent.update_layout(height=450)
-                st.plotly_chart(fig_cent, use_container_width=True)
+            if isinstance(obj, str) or labeled_final is None:
+                st.warning(f"Não foi possível analisar {escolha}")
             else:
-                st.info("Centróides vazios — nenhuma coluna numérica encontrada.")
-        except Exception as e:
-            st.info(f"Não foi possível gerar heatmap de centróides: {e}")
+                X_all = labeled_final.drop(columns=["Cluster"])
+                y_all_raw = labeled_final["Cluster"]
 
-        # 2) Matriz de distâncias entre centróides
-        st.markdown("**Matriz de distâncias entre centróides**")
-        st.markdown("💡 Ideia geral: Mostra quão separados estão os clusters uns dos outros.")
-        st.markdown("👉 Exemplo prático: Clusters próximos → grupos parecidos; Clusters distantes → grupos bem diferentes.")
-        try:
-            from sklearn.metrics import pairwise_distances
-            cent = centroids.values
-            if cent.size == 0:
-                st.info("Centróides vazios — nada a mostrar.")
-            else:
-                dist_mat = pairwise_distances(cent, metric="euclidean")
-                fig_dist = px.imshow(dist_mat, x=centroids.index.astype(str), y=centroids.index.astype(str),
-                                    labels=dict(x="cluster", y="cluster", color="distância"),
-                                    title="Distância euclidiana entre centróides")
-                fig_dist.update_layout(height=420)
-                st.plotly_chart(fig_dist, use_container_width=True)
-        except Exception as e:
-            st.info(f"Não foi possível gerar matriz de distâncias: {e}")
+                try:
+                    y_codes, y_uniques = pd.factorize(y_all_raw)
+                except Exception:
+                    try:
+                        y_codes = y_all_raw.astype(int).values
+                        y_uniques = np.unique(y_codes)
+                    except Exception:
+                        y_codes = np.arange(len(y_all_raw))
+                        y_uniques = np.unique(y_codes)
 
-        # 3) Importância de features via RandomForest (proxy)
-        st.markdown("**Importância de features (RandomForest proxy)**")
-        st.markdown("💡 Ideia geral: Mostra quais genes/features mais ajudam a diferenciar os clusters.")
-        st.markdown("👉 Exemplo prático: Top genes → bons candidatos para estudos biológicos mais detalhados.")
-        try:
-            from sklearn.ensemble import RandomForestClassifier
-            from sklearn.model_selection import train_test_split
+                # 1) Heatmap das médias (centróides)
+                st.markdown("**Heatmap: médias/centróides por cluster**")
+                st.markdown("💡 Ideia geral: Cada linha = cluster, cada coluna = gene/feature. As cores mostram os valores médios de expressão.")
+                st.markdown("👉 Exemplo prático: Permite ver rapidamente quais genes estão mais ativos em cada cluster.")
+                try:
+                    centroids = labeled_final.groupby("Cluster").mean()
+                    if not centroids.empty:
+                        fig_cent = px.imshow(
+                            centroids,
+                            labels=dict(x="feature", y="cluster", color="mean"),
+                            title="Centróides (média por feature por cluster)",
+                            aspect="auto"
+                        )
+                        fig_cent.update_layout(height=450)
+                        st.plotly_chart(fig_cent, use_container_width=True)
+                    else:
+                        st.info("Centróides vazios — nenhuma coluna numérica encontrada.")
+                except Exception as e:
+                    st.info(f"Não foi possível gerar heatmap de centróides: {e}")
 
-            if X_all.shape[1] < 2:
-                st.info("Poucas features para treinar RandomForest.")
-            else:
-                max_features_rf = min(500, X_all.shape[1])
-                var_order = X_all.var(axis=0).sort_values(ascending=False).head(max_features_rf).index
-                X_rf = X_all[var_order].fillna(0.0)
-                y_enc = y_codes
-                stratify_arg = y_enc if len(np.unique(y_enc)) > 1 and min(np.bincount(y_enc)) > 1 else None
-                X_tr, X_te, y_tr, y_te = train_test_split(X_rf, y_enc, test_size=0.25, random_state=42, stratify=stratify_arg)
-                rf = RandomForestClassifier(n_estimators=200, random_state=42, n_jobs=-1)
-                with st.spinner("Treinando RandomForest para estimar importância de features (proxy)..."):
-                    rf.fit(X_tr, y_tr)
-                importances = pd.Series(rf.feature_importances_, index=X_rf.columns).sort_values(ascending=False)
-                top_n_imp = int(st.number_input("Top-N features (Feature Importance)", min_value=3, max_value=50, value=10, key="rf_topn"))
-                train_score = rf.score(X_tr, y_tr)
-                test_score = rf.score(X_te, y_te)
-                st.write(f"Importâncias (top {top_n_imp}) — accuracy proxy (treino/teste): {train_score:.3f} / {test_score:.3f}")
-                fig_imp = px.bar(x=importances.head(top_n_imp).index, y=importances.head(top_n_imp).values,
-                                labels={"x":"feature","y":"importance"}, title=f"Top {top_n_imp} features por importance (RandomForest proxy)")
-                fig_imp.update_layout(xaxis_tickangle=-45, height=420)
-                st.plotly_chart(fig_imp, use_container_width=True)
-        except Exception as e:
-            st.info(f"Importância de features indisponível: {e}")
+                # 2) Matriz de distâncias entre centróides
+                st.markdown("**Matriz de distâncias entre centróides**")
+                st.markdown("💡 Ideia geral: Mostra quão separados estão os clusters uns dos outros.")
+                st.markdown("👉 Exemplo prático: Clusters próximos → grupos parecidos; Clusters distantes → grupos bem diferentes.")
+                try:
+                    from sklearn.metrics import pairwise_distances
+                    cent = centroids.values
+                    if cent.size == 0:
+                        st.info("Centróides vazios — nada a mostrar.")
+                    else:
+                        dist_mat = pairwise_distances(cent, metric="euclidean")
+                        fig_dist = px.imshow(dist_mat, x=centroids.index.astype(str), y=centroids.index.astype(str),
+                                            labels=dict(x="cluster", y="cluster", color="distância"),
+                                            title="Distância euclidiana entre centróides")
+                        fig_dist.update_layout(height=420)
+                        st.plotly_chart(fig_dist, use_container_width=True)
+                except Exception as e:
+                    st.info(f"Não foi possível gerar matriz de distâncias: {e}")
 
-        # 4) ANOVA (SelectKBest style) — top features por F-score
-        st.markdown("**Top features por ANOVA (F-score)**")
-        st.markdown("💡 Ideia geral: Identifica genes/features com maiores diferenças médias entre clusters. O heatmap mostra como essas features variam entre os grupos.")
-        st.markdown("👉 Exemplo prático: Ajuda a entender quais genes separam melhor os clusters.")
-        try:
-            from sklearn.feature_selection import f_classif
-            if X_all.shape[1] < 2 or len(np.unique(y_codes)) < 2:
-                st.info("ANOVA requer pelo menos 2 features e 2 clusters distintos.")
-            else:
-                max_feats_anova = min(2000, X_all.shape[1])
-                cols_for_anova = X_all.var(axis=0).sort_values(ascending=False).head(max_feats_anova).index
-                X_anova = X_all[cols_for_anova].fillna(0.0).values
-                F, pvals = f_classif(X_anova, y_codes)
-                f_series = pd.Series(F, index=cols_for_anova).sort_values(ascending=False)
-                top_n_anova = int(st.number_input("Top-N features (ANOVA F)", min_value=3, max_value=50, value=10, key="anova_topn"))
-                st.dataframe(pd.DataFrame({"F_score": f_series.head(top_n_anova)}).style.format("{:.4f}"))
-                top_an_feats = f_series.head(top_n_anova).index.tolist()
-                mean_by_cluster = labeled_final.groupby("Cluster")[top_an_feats].mean()
-                fig_an_heat = px.imshow(mean_by_cluster, labels=dict(x="feature", y="cluster", color="mean"),
-                                        title=f"Heatmap — top {top_n_anova} features por ANOVA (média por cluster)")
-                fig_an_heat.update_layout(height=420)
-                st.plotly_chart(fig_an_heat, use_container_width=True)
-        except Exception as e:
-            st.info(f"ANOVA indisponível: {e}")
+                # 3) Importância de features via RandomForest (proxy)
+                st.markdown("**Importância de features (RandomForest proxy)**")
+                st.markdown("💡 Ideia geral: Mostra quais genes/features mais ajudam a diferenciar os clusters.")
+                st.markdown("👉 Exemplo prático: Top genes → bons candidatos para estudos biológicos mais detalhados.")
+                try:
+                    from sklearn.ensemble import RandomForestClassifier
+                    from sklearn.model_selection import train_test_split
 
-        # 5) Silhouette detalhado (scatter ordenado)
-        st.markdown("**Silhouette detalhado (ordenado)**")
-        st.markdown("💡 Ideia geral: Permite ver quais amostras podem estar mal atribuídas (valores negativos).")
-        st.markdown("👉 Exemplo prático: Amostras problemáticas podem indicar erros de clusterização ou casos especiais.")
-        try:
-            from sklearn.metrics import silhouette_samples
-            X_vis = X_all.fillna(0.0).values
-            labels = y_codes
-            if len(np.unique(labels)) > 1:
-                sil_vals = silhouette_samples(X_vis, labels)
-                sil_df = pd.DataFrame({"silhouette": sil_vals, "cluster": labels.astype(str)})
-                sil_df = sil_df.sort_values(["cluster", "silhouette"], ascending=[True, False]).reset_index(drop=True)
-                sil_df["idx"] = sil_df.index
-                fig_scat = px.scatter(sil_df, x="idx", y="silhouette", color="cluster",
-                                    title="Silhouette por amostra (ordenado por cluster)")
-                fig_scat.update_layout(height=350, xaxis_title="amostras (ordenadas)", yaxis_title="silhouette")
-                st.plotly_chart(fig_scat, use_container_width=True)
-                st.markdown("Atenção a valores negativos: amostras com silhouette negativo podem estar mal atribuídas.")
-            else:
-                st.info("Silhouette requer pelo menos 2 clusters.")
-        except Exception as e:
-            st.info(f"Silhouette detalhado não disponível: {e}")
+                    if X_all.shape[1] < 2:
+                        st.info("Poucas features para treinar RandomForest.")
+                    else:
+                        max_features_rf = min(500, X_all.shape[1])
+                        var_order = X_all.var(axis=0).sort_values(ascending=False).head(max_features_rf).index
+                        X_rf = X_all[var_order].fillna(0.0)
+                        y_enc = y_codes
+                        stratify_arg = y_enc if len(np.unique(y_enc)) > 1 and min(np.bincount(y_enc)) > 1 else None
+                        X_tr, X_te, y_tr, y_te = train_test_split(X_rf, y_enc, test_size=0.25, random_state=42, stratify=stratify_arg)
+                        rf = RandomForestClassifier(n_estimators=200, random_state=42, n_jobs=-1)
+                        with st.spinner("Treinando RandomForest para estimar importância de features (proxy)..."):
+                            rf.fit(X_tr, y_tr)
+                        importances = pd.Series(rf.feature_importances_, index=X_rf.columns).sort_values(ascending=False)
+                        top_n_imp = int(st.number_input("Top-N features (Feature Importance)", min_value=3, max_value=50, value=10, key="rf_topn"))
+                        train_score = rf.score(X_tr, y_tr)
+                        test_score = rf.score(X_te, y_te)
+                        st.write(f"Importâncias (top {top_n_imp}) — accuracy proxy (treino/teste): {train_score:.3f} / {test_score:.3f}")
+                        fig_imp = px.bar(x=importances.head(top_n_imp).index, y=importances.head(top_n_imp).values,
+                                        labels={"x":"feature","y":"importance"}, title=f"Top {top_n_imp} features por importance (RandomForest proxy)")
+                        fig_imp.update_layout(xaxis_tickangle=-45, height=420)
+                        st.plotly_chart(fig_imp, use_container_width=True)
+                except Exception as e:
+                    st.info(f"Importância de features indisponível: {e}")
 
-        # 6) Centróides em 2D (PCA)
-        st.markdown("**Centróides projetados (PCA 2D)**")
-        st.markdown("💡 Ideia geral: Mostra os clusters como pontos no espaço 2D, usando os valores médios das features.")
-        st.markdown("👉 Exemplo prático: Permite ver visualmente se os clusters estão bem separados ou se há sobreposição.")
-        try:
-            from sklearn.decomposition import PCA as _PCA
-            if 'centroids' in locals() and centroids.shape[0] >= 2 and centroids.shape[1] >= 2:
-                pca_c = _PCA(n_components=2, random_state=42).fit_transform(centroids.values)
-                cent_df = pd.DataFrame(pca_c, columns=["pc1", "pc2"], index=centroids.index.astype(str))
-                cent_df["cluster"] = cent_df.index
-                fig_cent2 = px.scatter(cent_df, x="pc1", y="pc2", text=cent_df.index, title="Centróides (PCA 2D)")
-                fig_cent2.update_traces(textposition="top center")
-                fig_cent2.update_layout(height=420)
-                st.plotly_chart(fig_cent2, use_container_width=True)
-            else:
-                st.info("Centróides insuficientes para projeção PCA 2D.")
-        except Exception as e:
-            st.info(f"Projeção dos centróides indisponível: {e}")
+                # 4) ANOVA (SelectKBest style) — top features por F-score
+                st.markdown("**Top features por ANOVA (F-score)**")
+                st.markdown("💡 Ideia geral: Identifica genes/features com maiores diferenças médias entre clusters. O heatmap mostra como essas features variam entre os grupos.")
+                st.markdown("👉 Exemplo prático: Ajuda a entender quais genes separam melhor os clusters.")
+                try:
+                    from sklearn.feature_selection import f_classif
+                    if X_all.shape[1] < 2 or len(np.unique(y_codes)) < 2:
+                        st.info("ANOVA requer pelo menos 2 features e 2 clusters distintos.")
+                    else:
+                        max_feats_anova = min(2000, X_all.shape[1])
+                        cols_for_anova = X_all.var(axis=0).sort_values(ascending=False).head(max_feats_anova).index
+                        X_anova = X_all[cols_for_anova].fillna(0.0).values
+                        F, pvals = f_classif(X_anova, y_codes)
+                        f_series = pd.Series(F, index=cols_for_anova).sort_values(ascending=False)
+                        top_n_anova = int(st.number_input("Top-N features (ANOVA F)", min_value=3, max_value=50, value=10, key="anova_topn"))
+                        st.dataframe(pd.DataFrame({"F_score": f_series.head(top_n_anova)}).style.format("{:.4f}"))
+                        top_an_feats = f_series.head(top_n_anova).index.tolist()
+                        mean_by_cluster = labeled_final.groupby("Cluster")[top_an_feats].mean()
+                        fig_an_heat = px.imshow(mean_by_cluster, labels=dict(x="feature", y="cluster", color="mean"),
+                                                title=f"Heatmap — top {top_n_anova} features por ANOVA (média por cluster)")
+                        fig_an_heat.update_layout(height=420)
+                        st.plotly_chart(fig_an_heat, use_container_width=True)
+                except Exception as e:
+                    st.info(f"ANOVA indisponível: {e}")
 
-        # 7) Plots nativos do PyCaret (opcional)
-st.markdown("**Plots nativos do PyCaret (se disponíveis)**")
-st.markdown("💡 Plots automáticos do PyCaret para análise de clusters.")
+                # 5) Silhouette detalhado (scatter ordenado)
+                st.markdown("**Silhouette detalhado (ordenado)**")
+                st.markdown("💡 Ideia geral: Permite ver quais amostras podem estar mal atribuídas (valores negativos).")
+                st.markdown("👉 Exemplo prático: Amostras problemáticas podem indicar erros de clusterização ou casos especiais.")
+                try:
+                    from sklearn.metrics import silhouette_samples
+                    X_vis = X_all.fillna(0.0).values
+                    labels = y_codes
+                    if len(np.unique(labels)) > 1:
+                        sil_vals = silhouette_samples(X_vis, labels)
+                        sil_df = pd.DataFrame({"silhouette": sil_vals, "cluster": labels.astype(str)})
+                        sil_df = sil_df.sort_values(["cluster", "silhouette"], ascending=[True, False]).reset_index(drop=True)
+                        sil_df["idx"] = sil_df.index
+                        fig_scat = px.scatter(sil_df, x="idx", y="silhouette", color="cluster",
+                                            title="Silhouette por amostra (ordenado por cluster)")
+                        fig_scat.update_layout(height=350, xaxis_title="amostras (ordenadas)", yaxis_title="silhouette")
+                        st.plotly_chart(fig_scat, use_container_width=True)
+                        st.markdown("Atenção a valores negativos: amostras com silhouette negativo podem estar mal atribuídas.")
+                    else:
+                        st.info("Silhouette requer pelo menos 2 clusters.")
+                except Exception as e:
+                    st.info(f"Silhouette detalhado não disponível: {e}")
 
-for plot_type in ["elbow", "silhouette", "tsne"]:
-    try:
-        st.markdown(f"**Plot PyCaret: {plot_type}**")
-        
-        # Explicações baseadas no tipo
-        if plot_type == "elbow":
-            st.markdown("💡 Gráfico de cotovelo: mostra a soma das distâncias quadradas dentro dos clusters para diferentes números de clusters.")
-            st.markdown("👉 Procure o 'cotovelo' no gráfico — o ponto onde a redução da distância começa a diminuir lentamente indica um bom número de clusters.")
-        elif plot_type == "silhouette":
-            st.markdown("💡 Gráfico de silhouette: mostra a média da silhouette por cluster, indicando quão bem as amostras estão atribuídas aos clusters.")
-            st.markdown("👉 Valores próximos de 1 → cluster bem definido; valores próximos de 0 → amostra na fronteira; negativos → amostra possivelmente no cluster errado.")
-        elif plot_type == "tsne":
-            st.markdown("💡 Gráfico de t-SNE: projeção 2D não linear das amostras, útil para visualizar separações complexas entre clusters.")
-            st.markdown("👉 Pontos próximos → amostras com comportamento parecido; pontos distantes → amostras diferentes; útil para ver se os clusters se separam visualmente.")
-        
-        plot_model(obj, plot=plot_type, display_format="streamlit")
-    except Exception as e:
-        st.info(f"{plot_type} não disponível via PyCaret para {escolha}")
+                # 6) Centróides em 2D (PCA)
+                st.markdown("**Centróides projetados (PCA 2D)**")
+                st.markdown("💡 Ideia geral: Mostra os clusters como pontos no espaço 2D, usando os valores médios das features.")
+                st.markdown("👉 Exemplo prático: Permite ver visualmente se os clusters estão bem separados ou se há sobreposição.")
+                try:
+                    from sklearn.decomposition import PCA as _PCA
+                    if 'centroids' in locals() and centroids.shape[0] >= 2 and centroids.shape[1] >= 2:
+                        pca_c = _PCA(n_components=2, random_state=42).fit_transform(centroids.values)
+                        cent_df = pd.DataFrame(pca_c, columns=["pc1", "pc2"], index=centroids.index.astype(str))
+                        cent_df["cluster"] = cent_df.index
+                        fig_cent2 = px.scatter(cent_df, x="pc1", y="pc2", text=cent_df.index, title="Centróides (PCA 2D)")
+                        fig_cent2.update_traces(textposition="top center")
+                        fig_cent2.update_layout(height=420)
+                        st.plotly_chart(fig_cent2, use_container_width=True)
+                    else:
+                        st.info("Centróides insuficientes para projeção PCA 2D.")
+                except Exception as e:
+                    st.info(f"Projeção dos centróides indisponível: {e}")
+
+                # 7) Plots nativos do PyCaret (opcional)
+                st.markdown("**Plots nativos do PyCaret (se disponíveis)**")
+                st.markdown("💡 Plots automáticos do PyCaret para análise de clusters.")
+
+                for plot_type in ["elbow", "silhouette", "tsne"]:
+                    try:
+                        st.markdown(f"**Plot PyCaret: {plot_type}**")
+                        
+                        # Explicações baseadas no tipo
+                        if plot_type == "elbow":
+                            st.markdown("💡 Gráfico de cotovelo: mostra a soma das distâncias quadradas dentro dos clusters para diferentes números de clusters.")
+                            st.markdown("👉 Procure o 'cotovelo' no gráfico — o ponto onde a redução da distância começa a diminuir lentamente indica um bom número de clusters.")
+                        elif plot_type == "silhouette":
+                            st.markdown("💡 Gráfico de silhouette: mostra a média da silhouette por cluster, indicando quão bem as amostras estão atribuídas aos clusters.")
+                            st.markdown("👉 Valores próximos de 1 → cluster bem definido; valores próximos de 0 → amostra na fronteira; negativos → amostra possivelmente no cluster errado.")
+                        elif plot_type == "tsne":
+                            st.markdown("💡 Gráfico de t-SNE: projeção 2D não linear das amostras, útil para visualizar separações complexas entre clusters.")
+                            st.markdown("👉 Pontos próximos → amostras com comportamento parecido; pontos distantes → amostras diferentes; útil para ver se os clusters se separam visualmente.")
+                        
+                        plot_model(obj, plot=plot_type, display_format="streamlit")
+                    except Exception as e:
+                        st.info(f"{plot_type} não disponível via PyCaret para {escolha}")
 
 
 
