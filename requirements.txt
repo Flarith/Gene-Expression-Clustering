@@ -7,4 +7,3 @@ scikit-learn>=1.4.0
 scipy>=1.13.0
 pycaret>=3.3.0
 typing-extensions>=4.10.0
-
