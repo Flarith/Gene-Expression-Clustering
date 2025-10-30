@@ -26,7 +26,6 @@ Flask==3.1.2
 fonttools==4.59.2
 gitdb==4.0.12
 GitPython==3.1.45
-htmlmin==0.1.12
 idna==3.10
 ImageHash==4.3.1
 imbalanced-learn==0.14.0
@@ -130,3 +129,4 @@ xxhash==3.5.0
 ydata-profiling==4.8.3
 yellowbrick==1.5
 zipp==3.23.0
+
