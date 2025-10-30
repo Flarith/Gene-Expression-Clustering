@@ -86,7 +86,6 @@ pyparsing==3.2.3
 python-dateutil==2.9.0.post0
 pytz==2025.2
 PyWavelets==1.9.0
-pywin32==311
 PyYAML==6.0.2
 pyzmq==27.0.2
 referencing==0.36.2
@@ -130,3 +129,4 @@ xxhash==3.5.0
 ydata-profiling==4.8.3
 yellowbrick==1.5
 zipp==3.23.0
+
