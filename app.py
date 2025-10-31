@@ -208,8 +208,7 @@ fonte = st.sidebar.radio("Selecione a fonte", ["Gene Expression (Exemplo)", "Upl
 
 if fonte == "Gene Expression (Exemplo)":
     # tenta carregar automaticamente o dataset local
-    caminho_csv = "C:/Users/gabri/OneDrive/Área de Trabalho/Faculdade/1 bimestre/Matemática computacional/Unsupervised_Learning_ML/dataset/Spellman.csv"
-    caminho_tsv = "C:/Users/gabri/OneDrive/Área de Trabalho/Faculdade/1 bimestre/Matemática computacional/Unsupervised_Learning_ML/dataset/Spellman.csv"
+    caminho_csv = os.path.join("dataset", "Spellman.csv")
 
     if os.path.exists(caminho_csv):
         df = pd.read_csv(caminho_csv)
@@ -1044,3 +1043,4 @@ Ajuda a enxergar “grupos naturais” de genes/amostras que se comportam de for
             except Exception as e:
                 st.info(f"Não foi possível salvar/baixar o modelo: {e}")
 # -------------------- Fim da visualização organizada --------------------
+
